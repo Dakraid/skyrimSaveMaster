@@ -11,6 +11,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
+
 	"github.com/dakraid/skyrimSaveMaster/rgb"
 )
 
@@ -23,6 +25,7 @@ const (
 
 const (
 	magicSize    = 13
+	uint8Size    = 1
 	uint16Size   = 2
 	uint32Size   = 4
 	float32Size  = 4
@@ -30,9 +33,13 @@ const (
 )
 
 type saveFile struct {
-	magic      string
-	headerSize uint32
-	header     saveHeader
+	magic          string
+	headerSize     uint32
+	header         saveHeader
+	screenshot     *rgb.Image
+	formVersion    uint8
+	pluginInfoSize uint32
+	pluginInfo     savePlugins
 }
 
 type saveHeader struct {
@@ -51,6 +58,11 @@ type saveHeader struct {
 	shotHeight         uint32
 }
 
+type savePlugins struct {
+	pluginCount uint8
+	plugins     []string
+}
+
 var saveGame saveFile
 
 var delta = time.Date(1970-369, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano()
@@ -58,6 +70,22 @@ var delta = time.Date(1970-369, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano()
 func check(e error) {
 	if e != nil {
 		panic(e)
+	}
+}
+
+func checkMagic(fileIn *os.File) (bool, error) {
+	magic := make([]byte, magicSize)
+	_, err := fileIn.Read(magic)
+
+	if err != nil {
+		return false, err
+	}
+
+	saveGame.magic = string(magic)
+	if string(magic) == "TESV_SAVEGAME" {
+		return true, nil
+	} else {
+		return false, errors.New("magic did not match expected value")
 	}
 }
 
@@ -92,6 +120,17 @@ func readFiletime(fileIn *os.File, offset int64) (time.Time, int64) {
 	t := binary.LittleEndian.Uint64(bytes)
 
 	return time.Unix(0, int64(t)*100+delta), offset + filetimeSize
+}
+
+func readUInt8(fileIn *os.File, offset int64) (uint8, int64) {
+	_, err := fileIn.Seek(offset, 0)
+	check(err)
+
+	bytes := make([]byte, uint8Size)
+	_, err = io.ReadAtLeast(fileIn, bytes, uint8Size)
+	check(err)
+
+	return bytes[0], offset + uint8Size
 }
 
 func readUInt16(fileIn *os.File, offset int64) (uint16, int64) {
@@ -130,20 +169,31 @@ func readFloat32(fileIn *os.File, offset int64) (float32, int64) {
 	return float, offset + float32Size
 }
 
-func checkMagic(fileIn *os.File) (bool, error) {
-	magic := make([]byte, magicSize)
-	_, err := fileIn.Read(magic)
+func readScreenshot(fileIn *os.File, startingOffset int64) int64 {
+	var nextOffset = startingOffset
 
-	if err != nil {
-		return false, err
-	}
+	arraySize := 3 * saveGame.header.shotWidth * saveGame.header.shotHeight
 
-	saveGame.magic = string(magic)
-	if string(magic) == "TESV_SAVEGAME" {
-		return true, nil
-	} else {
-		return false, errors.New("magic did not match expected value")
-	}
+	_, err := fileIn.Seek(nextOffset, 0)
+	check(err)
+
+	screenshotData := make([]uint8, arraySize)
+	_, err = io.ReadAtLeast(fileIn, screenshotData, int(arraySize))
+	check(err)
+
+	saveGame.screenshot = rgb.NewImage(image.Rect(0, 0, int(saveGame.header.shotWidth), int(saveGame.header.shotHeight)))
+	saveGame.screenshot.Pix = screenshotData
+
+	out, err := os.Create("output.jpg")
+	check(err)
+
+	var opt jpeg.Options
+	opt.Quality = 100
+
+	err = jpeg.Encode(out, saveGame.screenshot, &opt)
+	check(err)
+
+	return nextOffset + int64(arraySize)
 }
 
 func readHeader(fileIn *os.File, startingOffset int64) int64 {
@@ -182,6 +232,21 @@ func readHeader(fileIn *os.File, startingOffset int64) int64 {
 	return nextOffset
 }
 
+func readPlugins(fileIn *os.File, startingOffset int64) int64 {
+	var nextOffset = startingOffset
+
+	saveGame.pluginInfo.pluginCount, nextOffset = readUInt8(fileIn, nextOffset)
+	saveGame.pluginInfo.plugins = make([]string, saveGame.pluginInfo.pluginCount)
+
+	for i := 0; i < int(saveGame.pluginInfo.pluginCount); i++ {
+		var temp string
+		temp, nextOffset = readWString(fileIn, nextOffset)
+		saveGame.pluginInfo.plugins[i] = temp
+	}
+
+	return nextOffset
+}
+
 func main() {
 
 	f, err := os.Open(file)
@@ -196,32 +261,14 @@ func main() {
 		saveGame.headerSize, headerOffset = readUInt32(f, int64(13))
 
 		nextOffset := readHeader(f, headerOffset)
+		nextOffset = readScreenshot(f, nextOffset)
+		saveGame.formVersion, nextOffset = readUInt8(f, nextOffset)
+		saveGame.pluginInfoSize, nextOffset = readUInt32(f, nextOffset)
+		nextOffset = readPlugins(f, nextOffset)
 
-		arraySize := 3 * saveGame.header.shotWidth * saveGame.header.shotHeight
-
-		_, err := f.Seek(nextOffset, 0)
+		out, err := os.Create("savegame.txt")
 		check(err)
-
-		screenshotData := make([]uint8, arraySize)
-		_, err = io.ReadAtLeast(f, screenshotData, int(arraySize))
-		check(err)
-
-		img := rgb.NewImage(image.Rect(0, 0, int(saveGame.header.shotWidth), int(saveGame.header.shotHeight)))
-
-		img.Pix = screenshotData
-
-		out, err := os.Create("output.jpg")
-		check(err)
-
-		var opt jpeg.Options
-		opt.Quality = 100
-		err = jpeg.Encode(out, img, &opt)
-		check(err)
-
-		if debug {
-			fmt.Printf("%+v\n", saveGame)
-			cet, _ := time.LoadLocation("CET")
-			fmt.Printf("filetimeConv: %s", saveGame.header.filetime.In(cet))
-		}
+		defer out.Close()
+		_, err = out.WriteString(spew.Sdump(saveGame))
 	}
 }
