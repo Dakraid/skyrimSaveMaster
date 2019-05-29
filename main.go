@@ -4,14 +4,22 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"io"
 	"math"
 	"os"
 	"time"
+
+	"github.com/dakraid/skyrimSaveMaster/rgb"
 )
 
 const file = "TestSave.ess"
-const debug = false
+
+const (
+	debug       = true
+	printOffset = false
+)
 
 const (
 	magicSize    = 13
@@ -21,8 +29,13 @@ const (
 	filetimeSize = 8
 )
 
+type saveFile struct {
+	magic      string
+	headerSize uint32
+	header     saveHeader
+}
+
 type saveHeader struct {
-	headerSize         uint32
 	version            uint32
 	saveNumber         uint32
 	playerName         string
@@ -38,7 +51,7 @@ type saveHeader struct {
 	shotHeight         uint32
 }
 
-var saveGame saveHeader
+var saveGame saveFile
 
 var delta = time.Date(1970-369, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano()
 
@@ -125,6 +138,7 @@ func checkMagic(fileIn *os.File) (bool, error) {
 		return false, err
 	}
 
+	saveGame.magic = string(magic)
 	if string(magic) == "TESV_SAVEGAME" {
 		return true, nil
 	} else {
@@ -132,26 +146,24 @@ func checkMagic(fileIn *os.File) (bool, error) {
 	}
 }
 
-func readHeader(fileIn *os.File) int64 {
-	var nextOffset = int64(13)
+func readHeader(fileIn *os.File, startingOffset int64) int64 {
+	var nextOffset = startingOffset
 
-	saveGame.headerSize, nextOffset = readUInt32(fileIn, nextOffset)
-	saveGame.version, nextOffset = readUInt32(fileIn, nextOffset)
-	saveGame.saveNumber, nextOffset = readUInt32(fileIn, nextOffset)
-	saveGame.playerName, nextOffset = readWString(fileIn, nextOffset)
-	saveGame.playerLevel, nextOffset = readUInt32(fileIn, nextOffset)
-	saveGame.playerLocation, nextOffset = readWString(fileIn, nextOffset)
-	saveGame.gameDate, nextOffset = readWString(fileIn, nextOffset)
-	saveGame.playerRaceEditorId, nextOffset = readWString(fileIn, nextOffset)
-	saveGame.playerSex, nextOffset = readUInt16(fileIn, nextOffset)
-	saveGame.playerCurExp, nextOffset = readFloat32(fileIn, nextOffset)
-	saveGame.playerLvlUpExp, nextOffset = readFloat32(fileIn, nextOffset)
-	saveGame.filetime, nextOffset = readFiletime(fileIn, nextOffset)
-	saveGame.shotWidth, nextOffset = readUInt32(fileIn, nextOffset)
-	saveGame.shotHeight, nextOffset = readUInt32(fileIn, nextOffset)
+	saveGame.header.version, nextOffset = readUInt32(fileIn, nextOffset)
+	saveGame.header.saveNumber, nextOffset = readUInt32(fileIn, nextOffset)
+	saveGame.header.playerName, nextOffset = readWString(fileIn, nextOffset)
+	saveGame.header.playerLevel, nextOffset = readUInt32(fileIn, nextOffset)
+	saveGame.header.playerLocation, nextOffset = readWString(fileIn, nextOffset)
+	saveGame.header.gameDate, nextOffset = readWString(fileIn, nextOffset)
+	saveGame.header.playerRaceEditorId, nextOffset = readWString(fileIn, nextOffset)
+	saveGame.header.playerSex, nextOffset = readUInt16(fileIn, nextOffset)
+	saveGame.header.playerCurExp, nextOffset = readFloat32(fileIn, nextOffset)
+	saveGame.header.playerLvlUpExp, nextOffset = readFloat32(fileIn, nextOffset)
+	saveGame.header.filetime, nextOffset = readFiletime(fileIn, nextOffset)
+	saveGame.header.shotWidth, nextOffset = readUInt32(fileIn, nextOffset)
+	saveGame.header.shotHeight, nextOffset = readUInt32(fileIn, nextOffset)
 
-	if debug {
-		fmt.Printf("headerSize Offset: %d\n", nextOffset)
+	if debug && printOffset {
 		fmt.Printf("version Offset: %d\n", nextOffset)
 		fmt.Printf("saveNumber Offset: %d\n", nextOffset)
 		fmt.Printf("playerName: %d\n", nextOffset)
@@ -167,7 +179,7 @@ func readHeader(fileIn *os.File) int64 {
 		fmt.Printf("shotHeight Offset: %d\n", nextOffset)
 	}
 
-	return int64(13 + saveGame.headerSize)
+	return nextOffset
 }
 
 func main() {
@@ -180,11 +192,36 @@ func main() {
 	check(err)
 
 	if magicCheck {
-		readHeader(f)
+		var headerOffset int64
+		saveGame.headerSize, headerOffset = readUInt32(f, int64(13))
+
+		nextOffset := readHeader(f, headerOffset)
+
+		arraySize := 3 * saveGame.header.shotWidth * saveGame.header.shotHeight
+
+		_, err := f.Seek(nextOffset, 0)
+		check(err)
+
+		screenshotData := make([]uint8, arraySize)
+		_, err = io.ReadAtLeast(f, screenshotData, int(arraySize))
+		check(err)
+
+		img := rgb.NewImage(image.Rect(0, 0, int(saveGame.header.shotWidth), int(saveGame.header.shotHeight)))
+
+		img.Pix = screenshotData
+
+		out, err := os.Create("output.jpg")
+		check(err)
+
+		var opt jpeg.Options
+		opt.Quality = 100
+		err = jpeg.Encode(out, img, &opt)
+		check(err)
+
+		if debug {
+			fmt.Printf("%+v\n", saveGame)
+			cet, _ := time.LoadLocation("CET")
+			fmt.Printf("filetimeConv: %s", saveGame.header.filetime.In(cet))
+		}
 	}
-
-	fmt.Printf("%+v\n", saveGame)
-
-	cet, _ := time.LoadLocation("CET")
-	fmt.Println(saveGame.filetime.In(cet))
 }
