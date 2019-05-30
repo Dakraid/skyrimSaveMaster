@@ -24,7 +24,7 @@ The utility will be based on the library, but feature additional functionality w
 ## License and User Agreement
 This library and the utility will be freely available under the MIT license terms.
 
-I am not responsible for any broken data or files that has resulted as part of using either the library or the utility. Use of either is at your own risk.
+I am not responsible for broken data or files resulting from use of this library or utility. Use of either is at your own risk.
 
 ## Disclaimer
 This library and utility is not made, guaranteed, or supported by Zenimax, Bethesda Game Studios, or any of their affiliates.
