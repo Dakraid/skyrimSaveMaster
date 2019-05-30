@@ -17,8 +17,8 @@ import (
 const file = "DefaultSave.ess"
 
 const (
-	debug       = true
-	printOffset = false
+	offsets = true
+	export  = false
 )
 
 var saveGame tesvStruct.SaveFile
@@ -149,6 +149,8 @@ func main() {
 
 	if magicCheck {
 		readSkyrimLE(f, int64(13))
-		exportSave("TES5_"+strings.TrimSuffix(filename, filepath.Ext(filename))+"_EX", saveGame)
+		if export {
+			exportSave("TES5_"+strings.TrimSuffix(filename, filepath.Ext(filename))+"_EX", saveGame)
+		}
 	}
 }
