@@ -79,4 +79,5 @@ $RECYCLE.BIN/
 !database.example.json
 *.txt
 *.jpg
+*.png
 *.ess

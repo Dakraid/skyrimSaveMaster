@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	"image/jpeg"
+	"image/png"
 	"io"
 	"math"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
@@ -16,7 +18,7 @@ import (
 	"github.com/dakraid/skyrimSaveMaster/rgb"
 )
 
-const file = "TestSave.ess"
+const file = "DefaultSave.ess"
 
 const (
 	debug       = true
@@ -33,13 +35,14 @@ const (
 )
 
 type saveFile struct {
-	magic          string
-	headerSize     uint32
-	header         saveHeader
-	screenshot     *rgb.Image
-	formVersion    uint8
-	pluginInfoSize uint32
-	pluginInfo     savePlugins
+	magic             string
+	headerSize        uint32
+	header            saveHeader
+	screenshot        *rgb.Image
+	formVersion       uint8
+	pluginInfoSize    uint32
+	pluginInfo        savePlugins
+	fileLocationTable saveFileLocationTable
 }
 
 type saveHeader struct {
@@ -61,6 +64,20 @@ type saveHeader struct {
 type savePlugins struct {
 	pluginCount uint8
 	plugins     []string
+}
+
+type saveFileLocationTable struct {
+	formIDArrayCountOffset uint32
+	changeFormsOffset      uint32
+	globalDataTable1Offset uint32
+	globalDataTable2Offset uint32
+	globalDataTable3Offset uint32
+	unknownTable3Offset    uint32
+	changeFormCount        uint32
+	globalDataTable1Count  uint32
+	globalDataTable2Count  uint32
+	globalDataTable3Count  uint32
+	unused                 [15]uint32
 }
 
 var saveGame saveFile
@@ -165,7 +182,7 @@ func readFloat32(fileIn *os.File, offset int64) (float32, int64) {
 
 	bits := binary.LittleEndian.Uint32(bytes)
 	float := math.Float32frombits(bits)
-
+	
 	return float, offset + float32Size
 }
 
@@ -183,15 +200,6 @@ func readScreenshot(fileIn *os.File, startingOffset int64) int64 {
 
 	saveGame.screenshot = rgb.NewImage(image.Rect(0, 0, int(saveGame.header.shotWidth), int(saveGame.header.shotHeight)))
 	saveGame.screenshot.Pix = screenshotData
-
-	out, err := os.Create("output.jpg")
-	check(err)
-
-	var opt jpeg.Options
-	opt.Quality = 100
-
-	err = jpeg.Encode(out, saveGame.screenshot, &opt)
-	check(err)
 
 	return nextOffset + int64(arraySize)
 }
@@ -247,9 +255,81 @@ func readPlugins(fileIn *os.File, startingOffset int64) int64 {
 	return nextOffset
 }
 
-func main() {
+func readFileLocationTable(fileIn *os.File, startingOffset int64) int64 {
+	var nextOffset = startingOffset
 
-	f, err := os.Open(file)
+	saveGame.fileLocationTable.formIDArrayCountOffset, nextOffset = readUInt32(fileIn, nextOffset)
+	saveGame.fileLocationTable.unknownTable3Offset, nextOffset = readUInt32(fileIn, nextOffset)
+	saveGame.fileLocationTable.globalDataTable1Offset, nextOffset = readUInt32(fileIn, nextOffset)
+	saveGame.fileLocationTable.globalDataTable2Offset, nextOffset = readUInt32(fileIn, nextOffset)
+	saveGame.fileLocationTable.changeFormsOffset, nextOffset = readUInt32(fileIn, nextOffset)
+	saveGame.fileLocationTable.globalDataTable3Offset, nextOffset = readUInt32(fileIn, nextOffset)
+	saveGame.fileLocationTable.globalDataTable1Count, nextOffset = readUInt32(fileIn, nextOffset)
+	saveGame.fileLocationTable.globalDataTable2Count, nextOffset = readUInt32(fileIn, nextOffset)
+	saveGame.fileLocationTable.globalDataTable3Count, nextOffset = readUInt32(fileIn, nextOffset)
+	saveGame.fileLocationTable.changeFormCount, nextOffset = readUInt32(fileIn, nextOffset)
+
+	for i := 0; i < len(saveGame.fileLocationTable.unused); i++ {
+		var temp uint32
+		temp, nextOffset = readUInt32(fileIn, nextOffset)
+		saveGame.fileLocationTable.unused[i] = temp
+	}
+
+	return nextOffset
+}
+
+func readSkyrimLE(fileIn *os.File, startingOffset int64) {
+	var nextOffset = startingOffset
+
+	saveGame.headerSize, nextOffset = readUInt32(fileIn, nextOffset)
+
+	nextOffset = readHeader(fileIn, nextOffset)
+	nextOffset = readScreenshot(fileIn, nextOffset)
+
+	saveGame.formVersion, nextOffset = readUInt8(fileIn, nextOffset)
+	saveGame.pluginInfoSize, nextOffset = readUInt32(fileIn, nextOffset)
+
+	nextOffset = readPlugins(fileIn, nextOffset)
+	nextOffset = readFileLocationTable(fileIn, nextOffset)
+}
+
+func exportSave(filename string, source saveFile) {
+	txtOut, err := os.Create(filename + ".txt")
+	check(err)
+	defer txtOut.Close()
+
+	_, err = txtOut.WriteString(spew.Sdump(source))
+	check(err)
+
+	imgOut, err := os.Create(filename + ".png")
+	check(err)
+	defer imgOut.Close()
+
+	err = png.Encode(imgOut, saveGame.screenshot)
+	check(err)
+
+	/*
+		imgRes := resize.Resize(0, 720, saveGame.screenshot, resize.MitchellNetravali)
+
+		imgOutB, err := os.Create(filename + "_big.png")
+		check(err)
+		defer imgOutB.Close()
+
+		err = png.Encode(imgOutB, imgRes)
+		check(err)
+	*/
+}
+
+func main() {
+	var filename = file
+
+	cliArgs := os.Args[1:]
+
+	if len(cliArgs) > 0 && cliArgs[0] != "" {
+		filename = cliArgs[0]
+	}
+
+	f, err := os.Open(filename)
 	check(err)
 	defer f.Close()
 
@@ -257,18 +337,7 @@ func main() {
 	check(err)
 
 	if magicCheck {
-		var headerOffset int64
-		saveGame.headerSize, headerOffset = readUInt32(f, int64(13))
-
-		nextOffset := readHeader(f, headerOffset)
-		nextOffset = readScreenshot(f, nextOffset)
-		saveGame.formVersion, nextOffset = readUInt8(f, nextOffset)
-		saveGame.pluginInfoSize, nextOffset = readUInt32(f, nextOffset)
-		nextOffset = readPlugins(f, nextOffset)
-
-		out, err := os.Create("savegame.txt")
-		check(err)
-		defer out.Close()
-		_, err = out.WriteString(spew.Sdump(saveGame))
+		readSkyrimLE(f, int64(13))
+		exportSave("TES5_"+strings.TrimSuffix(filename, filepath.Ext(filename))+"_EX", saveGame)
 	}
 }
